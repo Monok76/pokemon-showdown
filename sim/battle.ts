@@ -1091,7 +1091,7 @@ export class Battle {
 	}
 
 	findEventHandlers(target: Pokemon | Pokemon[] | Side | Battle, eventName: string, source?: Pokemon | null) {
-		let handlers: EventListener[] = [];
+		const handlers: EventListener[] = [];
 		if (Array.isArray(target)) {
 			for (const [i, pokemon] of target.entries()) {
 				// console.log(`Event: ${eventName}, Target: ${pokemon}, ${i}`);
@@ -1099,8 +1099,8 @@ export class Battle {
 				for (const handler of curHandlers) {
 					handler.target = pokemon; // Original "effectHolder"
 					handler.index = i;
+					handlers.push(handler);
 				}
-				handlers = handlers.concat(curHandlers);
 			}
 			return handlers;
 		}
@@ -1110,52 +1110,50 @@ export class Battle {
 		const prefixedHandlers = !['BeforeTurn', 'Update', 'Weather', 'WeatherChange', 'TerrainChange'].includes(eventName);
 		const names = callbackNames(eventName);
 		if (target instanceof Pokemon && (target.isActive || source?.isActive)) {
-			handlers = this.findPokemonEventHandlers(target, names.on);
+			this.findPokemonEventHandlers(target, names.on, undefined, handlers);
 			if (prefixedHandlers) {
 				for (const allyActive of target.alliesAndSelf()) {
-					handlers.push(...this.findPokemonEventHandlers(allyActive, names.onAlly));
-					handlers.push(...this.findPokemonEventHandlers(allyActive, names.onAny));
+					this.findPokemonEventHandlers(allyActive, names.onAlly, undefined, handlers);
+					this.findPokemonEventHandlers(allyActive, names.onAny, undefined, handlers);
 				}
 				for (const foeActive of target.foes()) {
-					handlers.push(...this.findPokemonEventHandlers(foeActive, names.onFoe));
-					handlers.push(...this.findPokemonEventHandlers(foeActive, names.onAny));
+					this.findPokemonEventHandlers(foeActive, names.onFoe, undefined, handlers);
+					this.findPokemonEventHandlers(foeActive, names.onAny, undefined, handlers);
 				}
 			}
 			target = target.side;
 		}
 		if (source && prefixedHandlers) {
-			handlers.push(...this.findPokemonEventHandlers(source, names.onSource));
+			this.findPokemonEventHandlers(source, names.onSource, undefined, handlers);
 		}
 		if (target instanceof Side) {
 			for (const side of this.sides) {
 				if (shouldBubbleDown) {
 					for (const active of side.active) {
 						if (side === target || side === target.allySide) {
-							handlers = handlers.concat(this.findPokemonEventHandlers(active, names.on));
+							this.findPokemonEventHandlers(active, names.on, undefined, handlers);
 						} else if (prefixedHandlers) {
-							handlers = handlers.concat(this.findPokemonEventHandlers(active, names.onFoe));
+							this.findPokemonEventHandlers(active, names.onFoe, undefined, handlers);
 						}
-						if (prefixedHandlers) handlers = handlers.concat(this.findPokemonEventHandlers(active, names.onAny));
+						if (prefixedHandlers) this.findPokemonEventHandlers(active, names.onAny, undefined, handlers);
 					}
 				}
 				if (side.n < 2 || !side.allySide) {
 					if (side === target || side === target.allySide) {
-						handlers.push(...this.findSideEventHandlers(side, names.on));
+						this.findSideEventHandlers(side, names.on, undefined, undefined, handlers);
 					} else if (prefixedHandlers) {
-						handlers.push(...this.findSideEventHandlers(side, names.onFoe));
+						this.findSideEventHandlers(side, names.onFoe, undefined, undefined, handlers);
 					}
-					if (prefixedHandlers) handlers.push(...this.findSideEventHandlers(side, names.onAny));
+					if (prefixedHandlers) this.findSideEventHandlers(side, names.onAny, undefined, undefined, handlers);
 				}
 			}
 		}
-		handlers.push(...this.findFieldEventHandlers(this.field, names.on));
-		handlers.push(...this.findBattleEventHandlers(names.on));
+		this.findFieldEventHandlers(this.field, names.on, undefined, undefined, handlers);
+		this.findBattleEventHandlers(names.on, undefined, undefined, handlers);
 		return handlers;
 	}
 
-	findPokemonEventHandlers(pokemon: Pokemon, callbackName: string, getKey?: 'duration') {
-		const handlers: EventListener[] = [];
-
+	findPokemonEventHandlers(pokemon: Pokemon, callbackName: string, getKey?: 'duration', handlers: EventListener[] = []) {
 		const status = pokemon.getStatus();
 		let callback = this.getCallback(pokemon, status, callbackName);
 		if (callback !== undefined || (getKey && pokemon.statusState[getKey])) {
@@ -1214,9 +1212,9 @@ export class Battle {
 		return handlers;
 	}
 
-	findBattleEventHandlers(callbackName: string, getKey?: 'duration', customHolder?: Pokemon) {
-		const handlers: EventListener[] = [];
-
+	findBattleEventHandlers(
+		callbackName: string, getKey?: 'duration', customHolder?: Pokemon, handlers: EventListener[] = []
+	) {
 		let callback;
 		const format = this.format;
 		callback = this.getCallback(this, format, callbackName);
@@ -1237,9 +1235,9 @@ export class Battle {
 		return handlers;
 	}
 
-	findFieldEventHandlers(field: Field, callbackName: string, getKey?: 'duration', customHolder?: Pokemon) {
-		const handlers: EventListener[] = [];
-
+	findFieldEventHandlers(
+		field: Field, callbackName: string, getKey?: 'duration', customHolder?: Pokemon, handlers: EventListener[] = []
+	) {
 		let callback;
 		for (const id in field.pseudoWeather) {
 			const pseudoWeatherState = field.pseudoWeather[id];
@@ -1272,9 +1270,9 @@ export class Battle {
 		return handlers;
 	}
 
-	findSideEventHandlers(side: Side, callbackName: string, getKey?: 'duration', customHolder?: Pokemon) {
-		const handlers: EventListener[] = [];
-
+	findSideEventHandlers(
+		side: Side, callbackName: string, getKey?: 'duration', customHolder?: Pokemon, handlers: EventListener[] = []
+	) {
 		for (const id in side.sideConditions) {
 			const sideConditionData = side.sideConditions[id];
 			const sideCondition = this.dex.conditions.getByID(id as ID);
