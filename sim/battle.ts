@@ -96,6 +96,47 @@ interface EventListener extends EventListenerWithoutPriority {
 
 type Part = string | number | boolean | Pokemon | Side | Effect | Move | null | undefined;
 
+// Each event looks up callbacks such as `onAllyModifyAtk` on every active Pokemon's status, volatiles,
+// ability, item and species, and most of those lookups find nothing. Effects have many different shapes,
+// so `effect[callbackName]` is slow; a table of each effect's `on*` entries is much faster. Only frozen
+// effects (everything the dex caches) get a table, since their entries can't change. An effect that isn't
+// frozen when first looked up, or has an `on*` getter or setter, is always read directly (null), and so
+// is any name that doesn't start with `on`.
+const callbackTables = new WeakMap<object, Map<string, any> | null>();
+
+function callbackTable(effect: object) {
+	if (!Object.isFrozen(effect)) return null;
+	const table = new Map<string, any>();
+	const seen = new Set<string>();
+	for (let obj = effect; obj; obj = Object.getPrototypeOf(obj)) {
+		for (const key of Object.getOwnPropertyNames(obj)) {
+			if (!key.startsWith('on') || seen.has(key)) continue;
+			seen.add(key);
+			const desc = Object.getOwnPropertyDescriptor(obj, key)!;
+			if (desc.get || desc.set) return null;
+			if (desc.value !== undefined) table.set(key, desc.value);
+		}
+	}
+	return table;
+}
+
+// `on${eventName}` and its prefixed forms, built once per event name instead of on every lookup.
+const callbackNameCache = new Map<string, Record<'on' | 'onAlly' | 'onAny' | 'onFoe' | 'onSource', string>>();
+
+function callbackNames(eventName: string) {
+	let names = callbackNameCache.get(eventName);
+	if (!names) {
+		// Using a string as an object key interns it, so map lookups don't rehash it.
+		const intern = (name: string) => Object.keys({ [name]: 0 })[0];
+		names = {
+			on: intern(`on${eventName}`), onAlly: intern(`onAlly${eventName}`), onAny: intern(`onAny${eventName}`),
+			onFoe: intern(`onFoe${eventName}`), onSource: intern(`onSource${eventName}`),
+		};
+		callbackNameCache.set(eventName, names);
+	}
+	return names;
+}
+
 // The current request state of the Battle:
 //
 //   - 'teampreview': beginning of BW/XY/SM battle (Team Preview)
@@ -1023,7 +1064,10 @@ export class Battle {
 	}
 
 	getCallback(target: Pokemon | Side | Field | Battle, effect: Effect, callbackName: string) {
-		let callback: Function | undefined = (effect as any)[callbackName];
+		let table = callbackTables.get(effect);
+		if (table === undefined) callbackTables.set(effect, table = callbackTable(effect));
+		let callback: Function | undefined = table && callbackName.startsWith('on') ?
+			table.get(callbackName) : (effect as any)[callbackName];
 
 		// Abilities and items Start at different times during the SwitchIn event, so we run their onStart handlers
 		// during the SwitchIn event instead of running the Start event during switch-ins
@@ -1064,47 +1108,48 @@ export class Battle {
 		const shouldBubbleDown = target instanceof Side;
 		// events usually run through EachEvent should never have any handlers besides `on${eventName}` so don't check for them
 		const prefixedHandlers = !['BeforeTurn', 'Update', 'Weather', 'WeatherChange', 'TerrainChange'].includes(eventName);
+		const names = callbackNames(eventName);
 		if (target instanceof Pokemon && (target.isActive || source?.isActive)) {
-			handlers = this.findPokemonEventHandlers(target, `on${eventName}`);
+			handlers = this.findPokemonEventHandlers(target, names.on);
 			if (prefixedHandlers) {
 				for (const allyActive of target.alliesAndSelf()) {
-					handlers.push(...this.findPokemonEventHandlers(allyActive, `onAlly${eventName}`));
-					handlers.push(...this.findPokemonEventHandlers(allyActive, `onAny${eventName}`));
+					handlers.push(...this.findPokemonEventHandlers(allyActive, names.onAlly));
+					handlers.push(...this.findPokemonEventHandlers(allyActive, names.onAny));
 				}
 				for (const foeActive of target.foes()) {
-					handlers.push(...this.findPokemonEventHandlers(foeActive, `onFoe${eventName}`));
-					handlers.push(...this.findPokemonEventHandlers(foeActive, `onAny${eventName}`));
+					handlers.push(...this.findPokemonEventHandlers(foeActive, names.onFoe));
+					handlers.push(...this.findPokemonEventHandlers(foeActive, names.onAny));
 				}
 			}
 			target = target.side;
 		}
 		if (source && prefixedHandlers) {
-			handlers.push(...this.findPokemonEventHandlers(source, `onSource${eventName}`));
+			handlers.push(...this.findPokemonEventHandlers(source, names.onSource));
 		}
 		if (target instanceof Side) {
 			for (const side of this.sides) {
 				if (shouldBubbleDown) {
 					for (const active of side.active) {
 						if (side === target || side === target.allySide) {
-							handlers = handlers.concat(this.findPokemonEventHandlers(active, `on${eventName}`));
+							handlers = handlers.concat(this.findPokemonEventHandlers(active, names.on));
 						} else if (prefixedHandlers) {
-							handlers = handlers.concat(this.findPokemonEventHandlers(active, `onFoe${eventName}`));
+							handlers = handlers.concat(this.findPokemonEventHandlers(active, names.onFoe));
 						}
-						if (prefixedHandlers) handlers = handlers.concat(this.findPokemonEventHandlers(active, `onAny${eventName}`));
+						if (prefixedHandlers) handlers = handlers.concat(this.findPokemonEventHandlers(active, names.onAny));
 					}
 				}
 				if (side.n < 2 || !side.allySide) {
 					if (side === target || side === target.allySide) {
-						handlers.push(...this.findSideEventHandlers(side, `on${eventName}`));
+						handlers.push(...this.findSideEventHandlers(side, names.on));
 					} else if (prefixedHandlers) {
-						handlers.push(...this.findSideEventHandlers(side, `onFoe${eventName}`));
+						handlers.push(...this.findSideEventHandlers(side, names.onFoe));
 					}
-					if (prefixedHandlers) handlers.push(...this.findSideEventHandlers(side, `onAny${eventName}`));
+					if (prefixedHandlers) handlers.push(...this.findSideEventHandlers(side, names.onAny));
 				}
 			}
 		}
-		handlers.push(...this.findFieldEventHandlers(this.field, `on${eventName}`));
-		handlers.push(...this.findBattleEventHandlers(`on${eventName}`));
+		handlers.push(...this.findFieldEventHandlers(this.field, names.on));
+		handlers.push(...this.findBattleEventHandlers(names.on));
 		return handlers;
 	}
 
